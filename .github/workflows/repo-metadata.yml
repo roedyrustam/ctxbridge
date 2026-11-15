@@ -1,0 +1,51 @@
+name: Sync Repo Metadata & Topics
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/repo-metadata.yml"
+
+jobs:
+  sync-metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for GH_ADMIN_TOKEN
+        id: check
+        env:
+          TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Set repository secret GH_ADMIN_TOKEN (PAT with repo/administration:write) to auto-sync GitHub description and topics."
+          fi
+
+      - name: Update repository description and topics
+        if: steps.check.outputs.has_token == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api -X PATCH "repos/${REPO}" \
+            -f description="Local-first cross-agent memory & context bridge (Rust CLI + MCP server) for Antigravity, Claude Code, Cursor, Codex CLI, and Gemini CLI." \
+            -f homepage="https://github.com/${REPO}#readme"
+
+          gh api -X PUT "repos/${REPO}/topics" \
+            -H "Accept: application/vnd.github+json" \
+            -f 'names[]=rust' \
+            -f 'names[]=cli' \
+            -f 'names[]=mcp' \
+            -f 'names[]=mcp-server' \
+            -f 'names[]=model-context-protocol' \
+            -f 'names[]=sqlite' \
+            -f 'names[]=fts5' \
+            -f 'names[]=ai-agents' \
+            -f 'names[]=context-management' \
+            -f 'names[]=claude-code' \
+            -f 'names[]=cursor' \
+            -f 'names[]=gemini-cli' \
+            -f 'names[]=local-first' \
+            -f 'names[]=developer-tools'

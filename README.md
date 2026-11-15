@@ -6,7 +6,26 @@
 
 **Local-first cross-agent memory & context bridge (CLI + MCP server)** written in Rust.
 
-`ctxbridge` solves context amnesia and rule fragmentation when switching between AI coding tools (**Antigravity**, **Claude Code**, **Cursor**, **OpenAI Codex CLI**, **Gemini CLI**).
+`ctxbridge` solves **context amnesia** and **rule fragmentation** when switching between AI coding tools (**Antigravity**, **Claude Code**, **Cursor**, **OpenAI Codex CLI**, **Gemini CLI**).
+
+```mermaid
+flowchart LR
+    A["Antigravity / Claude / Cursor / Codex / Gemini"] <-->|MCP stdio / CLI| B["ctxbridge"]
+    B --> C[".ctxbridge/project.db (SQLite FTS5)"]
+    B --> D["~/.ctxbridge/global.db (Cross-project)"]
+    B --> E[".ctxbridge/memories.jsonl (Git-friendly)"]
+    B -->|ctxbridge sync| F["AGENTS.md · CLAUDE.md · .cursorrules · CODEX.md · .gemini/GEMINI.md"]
+```
+
+## Why `ctxbridge`?
+
+| | Cloud Memory SaaS | `ctxbridge` |
+| :--- | :--- | :--- |
+| **Latency** | 200–800 ms network round-trip | **`< 10 ms`** single static Rust binary |
+| **Privacy** | Code & decisions sent to external servers | **100% local-first** (SQLite on your disk) |
+| **Offline** | Broken without internet / API keys | **Works offline** with FTS5 + BM25 + recency |
+| **Team Sync** | Proprietary cloud sync | **Git-native** (`.ctxbridge/memories.jsonl` + `rules.md`) |
+| **Token Cost** | Dumps huge raw context | **`< 500` token Handoff Capsules** |
 
 ## Supported AI Tools & Adapter Targets
 
