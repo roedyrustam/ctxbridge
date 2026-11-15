@@ -1,0 +1,26 @@
+[package]
+name = "ctxbridge"
+version = "0.1.0"
+edition = "2021"
+description = "Local-first cross-agent memory & context bridge (CLI + MCP server) for AI coding tools"
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "ctxbridge"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+directories = "5.0"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "1.0"
+uuid = { version = "1.10", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.13"
