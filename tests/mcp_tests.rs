@@ -117,17 +117,23 @@ fn mcp_initialize_tools_resources_and_roundtrip() {
 
     // 4. memory_save
     assert_eq!(responses[3]["result"]["isError"], false);
-    let save_text = responses[3]["result"]["content"][0]["text"].as_str().unwrap();
+    let save_text = responses[3]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
     assert!(save_text.contains("created"));
 
     // 5. memory_recall
     assert_eq!(responses[4]["result"]["isError"], false);
-    let recall_text = responses[4]["result"]["content"][0]["text"].as_str().unwrap();
+    let recall_text = responses[4]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
     assert!(recall_text.contains("SHA-256"));
 
     // 6. capsule_generate
     assert_eq!(responses[5]["result"]["isError"], false);
-    let capsule_text = responses[5]["result"]["content"][0]["text"].as_str().unwrap();
+    let capsule_text = responses[5]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
     assert!(capsule_text.contains("ctxbridge_capsule"));
 
     // 7. context_sync
@@ -139,15 +145,21 @@ fn mcp_initialize_tools_resources_and_roundtrip() {
     assert_eq!(resources.len(), 3);
 
     // 9. resources/read ctxbridge://rules
-    let rules_text = responses[8]["result"]["contents"][0]["text"].as_str().unwrap();
+    let rules_text = responses[8]["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap();
     assert!(rules_text.contains("Never panic in library code."));
 
     // 10. resources/read ctxbridge://status
-    let status_text = responses[9]["result"]["contents"][0]["text"].as_str().unwrap();
+    let status_text = responses[9]["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap();
     assert!(status_text.contains("\"project_initialized\": true"));
 
     // 11. resources/read ctxbridge://capsule/latest
-    let latest_cap_text = responses[10]["result"]["contents"][0]["text"].as_str().unwrap();
+    let latest_cap_text = responses[10]["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap();
     assert!(latest_cap_text.contains("Verify MCP capsule"));
 
     // 12. unknown/method returns JSON-RPC -32601

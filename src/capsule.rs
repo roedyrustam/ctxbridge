@@ -123,8 +123,9 @@ fn render_header(
     };
     match format {
         CapsuleFormat::Yaml => format!(
-            "ctxbridge_capsule:\n  target_agent: \"{target_agent}\"\n  goal: \"{}\"\n  token_budget: {budget}\n  generated_at: \"{timestamp}\"\n  memories:",
-            clean_goal.replace('"', "'")
+            "ctxbridge_capsule:\n  target_agent: \"{}\"\n  goal: \"{}\"\n  token_budget: {budget}\n  generated_at: \"{timestamp}\"\n  memories:",
+            escape_yaml_double_quoted(target_agent),
+            escape_yaml_double_quoted(clean_goal)
         ),
         CapsuleFormat::Markdown => format!(
             "# ctxbridge Handoff Capsule\n- **Target Agent:** `{target_agent}`\n- **Goal:** {clean_goal}\n- **Token Budget:** {budget}\n- **Generated:** `{timestamp}`\n\n## Active Context"
@@ -134,10 +135,16 @@ fn render_header(
 
 fn format_entry(mem: &MemoryRecord, format: CapsuleFormat) -> String {
     let body = compact_body(&mem.content, 220);
-    let tags = if mem.tags.is_empty() {
+    let non_empty_tags: Vec<&str> = mem
+        .tags
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let tags = if non_empty_tags.is_empty() {
         String::new()
     } else {
-        format!(" [{}]", mem.tags.join(","))
+        format!(" [{}]", non_empty_tags.join(","))
     };
     match format {
         CapsuleFormat::Yaml => format!(
@@ -145,8 +152,8 @@ fn format_entry(mem: &MemoryRecord, format: CapsuleFormat) -> String {
             mem.kind,
             mem.scope,
             mem.priority,
-            body.replace('"', "'"),
-            tags
+            escape_yaml_double_quoted(&body),
+            escape_yaml_double_quoted(&tags)
         ),
         CapsuleFormat::Markdown => format!(
             "- **[{}|p{}|{}]** {}{}",
@@ -159,7 +166,9 @@ fn assemble_capsule(header: &str, entries: &[String], format: CapsuleFormat) -> 
     if entries.is_empty() {
         match format {
             CapsuleFormat::Yaml => format!("{header} []\n"),
-            CapsuleFormat::Markdown => format!("{header}\n- _(no matching memories within budget)_\n"),
+            CapsuleFormat::Markdown => {
+                format!("{header}\n- _(no matching memories within budget)_\n")
+            }
         }
     } else {
         format!("{header}\n{}\n", entries.join("\n"))
@@ -170,8 +179,108 @@ fn compact_body(content: &str, max_chars: usize) -> String {
     let single_line = content.split_whitespace().collect::<Vec<_>>().join(" ");
     if single_line.chars().count() <= max_chars {
         single_line
+    } else if max_chars <= 3 {
+        single_line.chars().take(max_chars).collect()
     } else {
         let truncated: String = single_line.chars().take(max_chars - 3).collect();
         format!("{truncated}...")
+    }
+}
+
+fn escape_yaml_double_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            c if c.is_control() => {
+                let code = c as u32;
+                if code <= 0xFF {
+                    out.push_str(&format!("\\x{code:02x}"));
+                } else {
+                    out.push_str(&format!("\\u{code:04x}"));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{CapsuleFormat, MemoryKind, MemoryRecord, MemoryScope};
+    use chrono::Utc;
+
+    fn sample_record(content: &str, tags: Vec<&str>) -> MemoryRecord {
+        let now = Utc::now();
+        MemoryRecord {
+            id: "mem-1".to_string(),
+            content_hash: "hash-1".to_string(),
+            scope: MemoryScope::Project,
+            kind: MemoryKind::Decision,
+            title: "Sample".to_string(),
+            content: content.to_string(),
+            source_agent: "tester".to_string(),
+            priority: 4,
+            token_estimate: estimate_tokens(content),
+            tags: tags.into_iter().map(String::from).collect(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn render_header_escapes_yaml_special_chars() {
+        let goal = "Fix \"quoted\" path C:\\src\\main.rs\nand\ttabs";
+        let target = "agent\\1\"alpha\"\nline2";
+        let header = render_header(
+            goal,
+            target,
+            500,
+            "2026-01-01T00:00:00Z".to_string(),
+            CapsuleFormat::Yaml,
+        );
+
+        assert!(header.contains(r#"target_agent: "agent\\1\"alpha\"\nline2""#));
+        assert!(header.contains(r#"goal: "Fix \"quoted\" path C:\\src\\main.rs\nand\ttabs""#));
+        // Header lines should not have unescaped newlines inside quoted values
+        assert_eq!(header.lines().count(), 6);
+    }
+
+    #[test]
+    fn format_entry_escapes_yaml_body_and_tags() {
+        let rec = sample_record(
+            r#"Use "strict" mode in C:\app\config"#,
+            vec!["tag\"1", "path\\a", "line\nbreak", "  ", "tab\there"],
+        );
+        let entry = format_entry(&rec, CapsuleFormat::Yaml);
+
+        assert!(entry.contains(
+            r#"summary: "Use \"strict\" mode in C:\\app\\config [tag\"1,path\\a,line\nbreak,tab\there]""#
+        ));
+        assert_eq!(entry.lines().count(), 4);
+    }
+
+    #[test]
+    fn compact_body_handles_multibyte_utf8_and_small_limits() {
+        // 10 multi-byte emoji / CJK characters
+        let text = "🚀🔥✨日本語テスト漢字";
+        let compacted = compact_body(text, 8);
+        assert_eq!(compacted.chars().count(), 8);
+        assert_eq!(compacted, "🚀🔥✨日本...");
+
+        // Small max_chars values must never underflow or panic
+        assert_eq!(compact_body(text, 3), "🚀🔥✨");
+        assert_eq!(compact_body(text, 2), "🚀🔥");
+        assert_eq!(compact_body(text, 0), "");
+
+        // Whitespace normalization with UTF-8
+        assert_eq!(compact_body("  αβγ \n\t δεζ  ", 20), "αβγ δεζ");
     }
 }

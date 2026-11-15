@@ -26,9 +26,7 @@ const DEFAULT_GITIGNORE_TEMPLATE: &str = "project.db*\n";
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir().context("failed to get current directory")?;
-    let project_root = cli
-        .project
-        .unwrap_or_else(|| find_project_root(&cwd));
+    let project_root = cli.project.unwrap_or_else(|| find_project_root(&cwd));
     let paths = BridgePaths::resolve(&project_root)?;
 
     match cli.command {
@@ -42,10 +40,7 @@ fn main() -> Result<()> {
             if !gitignore_path.exists() {
                 fs::write(&gitignore_path, DEFAULT_GITIGNORE_TEMPLATE)?;
             }
-            println!(
-                "Initialized ctxbridge at {}",
-                paths.project_dir.display()
-            );
+            println!("Initialized ctxbridge at {}", paths.project_dir.display());
             println!("Canonical rules: {}", paths.project_rules.display());
             println!("Run `ctxbridge sync` to update AGENTS.md, CLAUDE.md, .cursorrules, CODEX.md, and .gemini/GEMINI.md.");
         }
@@ -80,7 +75,11 @@ fn main() -> Result<()> {
                     tags: parsed_tags,
                 },
             )?;
-            let action = if inserted { "Saved" } else { "Updated (deduplicated)" };
+            let action = if inserted {
+                "Saved"
+            } else {
+                "Updated (deduplicated)"
+            };
             println!(
                 "{action} [{}|{}|p{}] {} ({})",
                 record.scope,
@@ -165,7 +164,11 @@ fn main() -> Result<()> {
                 existing_only,
                 check,
             )?;
-            let label = if check { "Sync check" } else { "Synced adapters" };
+            let label = if check {
+                "Sync check"
+            } else {
+                "Synced adapters"
+            };
             println!("{label} (checksum {}):", &checksum[..12]);
             let mut out_of_sync = false;
             for r in reports {
@@ -222,9 +225,7 @@ fn main() -> Result<()> {
             paths.ensure_project_dir()?;
             let store = MemoryStore::open(&paths.project_db)?;
             let (imported, skipped) = store.import_jsonl(&paths.project_jsonl)?;
-            println!(
-                "Imported {imported} new memories ({skipped} duplicates merged/skipped)."
-            );
+            println!("Imported {imported} new memories ({skipped} duplicates merged/skipped).");
         }
         Commands::Status { json } => {
             let report = collect_status(&paths)?;
@@ -315,7 +316,11 @@ fn main() -> Result<()> {
             } else {
                 println!(
                     "ctxbridge doctor: {}",
-                    if report.healthy { "HEALTHY" } else { "ISSUES FOUND" }
+                    if report.healthy {
+                        "HEALTHY"
+                    } else {
+                        "ISSUES FOUND"
+                    }
                 );
                 println!("  - project initialized: {}", report.project_initialized);
                 println!("  - project.db ok:       {}", report.project_db_ok);

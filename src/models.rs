@@ -250,3 +250,55 @@ pub fn normalize_tags(tags: Vec<String>) -> Vec<String> {
     cleaned.dedup();
     cleaned
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn estimate_tokens_handles_empty_ascii_and_utf8() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("a"), 1);
+        assert_eq!(estimate_tokens("abcd"), 1);
+        assert_eq!(estimate_tokens("abcde"), 2);
+        // Multi-byte UTF-8 counts chars, not raw bytes
+        assert_eq!(estimate_tokens("🚀🔥✨🎉"), 1);
+        assert_eq!(estimate_tokens("日本語テスト"), 2);
+    }
+
+    #[test]
+    fn derive_title_handles_utf8_truncation_and_blank_lines() {
+        assert_eq!(derive_title(""), "");
+        assert_eq!(derive_title("   \n\t\n  "), "");
+        assert_eq!(
+            derive_title("\n  \n  First real line  \nSecond"),
+            "First real line"
+        );
+
+        // Exactly 80 multi-byte characters should not truncate
+        let exact_80: String = "漢".repeat(80);
+        assert_eq!(derive_title(&exact_80), exact_80);
+
+        // 85 multi-byte characters should truncate to 77 chars + "..." = 80 chars
+        let over_80: String = "🚀".repeat(85);
+        let title = derive_title(&over_80);
+        assert_eq!(title.chars().count(), 80);
+        assert!(title.ends_with("..."));
+        assert_eq!(title, format!("{}...", "🚀".repeat(77)));
+    }
+
+    #[test]
+    fn normalize_tags_trims_lowercases_dedups_and_drops_empty() {
+        let input = vec![
+            "".to_string(),
+            "   ".to_string(),
+            "\t\n".to_string(),
+            "  Rust ".to_string(),
+            "rust".to_string(),
+            "CLI".to_string(),
+            "cli".to_string(),
+            "  Alpha  ".to_string(),
+        ];
+        assert_eq!(normalize_tags(input), vec!["alpha", "cli", "rust"]);
+    }
+}

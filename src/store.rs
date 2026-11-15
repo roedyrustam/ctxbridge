@@ -342,9 +342,9 @@ impl MemoryStore {
 
         // Fallback: substring match or recent priority ordering
         let needle = query.text.trim().to_lowercase();
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM memories ORDER BY priority DESC, updated_at DESC LIMIT 200",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM memories ORDER BY priority DESC, updated_at DESC LIMIT 200")?;
         let ids = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut results = Vec::new();
         for id_res in ids {
@@ -384,9 +384,9 @@ impl MemoryStore {
     }
 
     pub fn list_pinned_and_recent(&self, limit: usize) -> Result<Vec<MemoryRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM memories ORDER BY priority DESC, updated_at DESC LIMIT ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM memories ORDER BY priority DESC, updated_at DESC LIMIT ?1")?;
         let rows = stmt.query_map(params![limit as i64], |row| row.get::<_, String>(0))?;
         let mut out = Vec::new();
         for r in rows {

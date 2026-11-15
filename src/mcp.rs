@@ -90,12 +90,7 @@ pub fn run_server_with_io<R: BufRead, W: Write>(
     Ok(())
 }
 
-fn handle_request(
-    paths: &BridgePaths,
-    id: Value,
-    method: &str,
-    params: &Value,
-) -> JsonRpcResponse {
+fn handle_request(paths: &BridgePaths, id: Value, method: &str, params: &Value) -> JsonRpcResponse {
     match method {
         "initialize" => JsonRpcResponse {
             jsonrpc: "2.0",
@@ -159,7 +154,10 @@ fn handle_request(
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let args = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             match execute_tool(paths, name, &args) {
                 Ok(text) => JsonRpcResponse {
                     jsonrpc: "2.0",
@@ -297,10 +295,7 @@ fn execute_tool(paths: &BridgePaths, name: &str, args: &Value) -> Result<String>
                         .collect()
                 })
                 .unwrap_or_default();
-            let priority = args
-                .get("priority")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(3) as u8;
+            let priority = args.get("priority").and_then(|v| v.as_u64()).unwrap_or(3) as u8;
             let source_agent = args
                 .get("source_agent")
                 .and_then(|v| v.as_str())
@@ -344,10 +339,7 @@ fn execute_tool(paths: &BridgePaths, name: &str, args: &Value) -> Result<String>
                 .and_then(|v| v.as_str())
                 .unwrap_or("all")
                 .parse()?;
-            let limit = args
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(8) as usize;
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
 
             let query = RecallQuery {
                 text,

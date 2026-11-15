@@ -57,13 +57,68 @@ pub fn default_global_dir() -> Result<PathBuf> {
 }
 
 pub fn find_project_root(start: &Path) -> PathBuf {
-    let mut current = start.to_path_buf();
+    let resolved = absolutize_path(start);
+    let mut current = resolved.clone();
     loop {
         if current.join(PROJECT_DIR_NAME).is_dir() || current.join(".git").exists() {
             return current;
         }
         if !current.pop() {
-            return start.to_path_buf();
+            return resolved;
         }
+    }
+}
+
+fn absolutize_path(path: &Path) -> PathBuf {
+    let joined = if path.is_relative() {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(path),
+            Err(_) => return path.to_path_buf(),
+        }
+    } else {
+        path.to_path_buf()
+    };
+
+    let mut normalized = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component);
+                }
+            }
+            other => normalized.push(other),
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        joined
+    } else {
+        normalized
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_project_root_resolves_relative_paths() {
+        let base =
+            std::env::temp_dir().join(format!("ctxbridge_paths_test_{}", std::process::id()));
+        let nested = base.join("a").join("b");
+        fs::create_dir_all(base.join(PROJECT_DIR_NAME)).unwrap();
+        fs::create_dir_all(&nested).unwrap();
+
+        // Absolute nested path finds base
+        assert_eq!(find_project_root(&nested), base);
+
+        // Relative path with `.` and `..` components resolves cleanly without failing on pop()
+        let rel = PathBuf::from(".").join("src").join("..");
+        let root = find_project_root(&rel);
+        assert!(root.is_absolute());
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

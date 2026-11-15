@@ -1,10 +1,13 @@
 [package]
 name = "ctxbridge"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Local-first cross-agent memory & context bridge (CLI + MCP server) for AI coding tools"
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/roedyrustam/ctxbridge"
+keywords = ["mcp", "ai", "memory", "cli", "context"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "ctxbridge"

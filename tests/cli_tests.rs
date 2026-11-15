@@ -53,7 +53,11 @@ fn cli_full_workflow_end_to_end() {
     );
     assert!(save_out.status.success());
 
-    let recall_out = run_cli(root, home, &["recall", "tenant", "--scope", "project", "--json"]);
+    let recall_out = run_cli(
+        root,
+        home,
+        &["recall", "tenant", "--scope", "project", "--json"],
+    );
     assert!(recall_out.status.success());
     let recalled: Value = serde_json::from_slice(&recall_out.stdout).unwrap();
     let arr = recalled.as_array().unwrap();
@@ -64,7 +68,11 @@ fn cli_full_workflow_end_to_end() {
     let promote_out = run_cli(root, home, &["promote", &mem_id[..8]]);
     assert!(promote_out.status.success());
 
-    let global_recall = run_cli(root, home, &["recall", "tenant", "--scope", "global", "--json"]);
+    let global_recall = run_cli(
+        root,
+        home,
+        &["recall", "tenant", "--scope", "global", "--json"],
+    );
     assert!(global_recall.status.success());
     let global_arr: Value = serde_json::from_slice(&global_recall.stdout).unwrap();
     assert_eq!(global_arr.as_array().unwrap().len(), 1);
@@ -73,7 +81,15 @@ fn cli_full_workflow_end_to_end() {
     let cap_out = run_cli(
         root,
         home,
-        &["capsule", "--goal", "Audit RLS policies", "--to", "claude", "--budget", "300"],
+        &[
+            "capsule",
+            "--goal",
+            "Audit RLS policies",
+            "--to",
+            "claude",
+            "--budget",
+            "300",
+        ],
     );
     assert!(
         cap_out.status.success(),

@@ -179,12 +179,21 @@ fn capsule_respects_token_budget_and_prioritizes_rules() {
             .unwrap();
     }
 
-    let capsule =
-        generate_capsule(&store, None, "Refactor MCP handler", "claude", 250, CapsuleFormat::Yaml)
-            .unwrap();
+    let capsule = generate_capsule(
+        &store,
+        None,
+        "Refactor MCP handler",
+        "claude",
+        250,
+        CapsuleFormat::Yaml,
+    )
+    .unwrap();
 
     assert!(capsule.token_used <= 250);
-    assert!(capsule.rendered_output.contains("Critical Rule") || capsule.rendered_output.contains("strict error handling"));
+    assert!(
+        capsule.rendered_output.contains("Critical Rule")
+            || capsule.rendered_output.contains("strict error handling")
+    );
 }
 
 #[test]
@@ -266,9 +275,7 @@ fn sync_check_mode_does_not_write_files_and_status_reports_targets() {
     // Actual sync writes files and records sync_targets
     let (sync_reports, _) =
         sync_adapters_with_mode(root, &paths.project_rules, &store, false, false).unwrap();
-    assert!(sync_reports
-        .iter()
-        .all(|r| r.status == SyncStatus::Created));
+    assert!(sync_reports.iter().all(|r| r.status == SyncStatus::Created));
     assert!(root.join("AGENTS.md").exists());
 
     let status = collect_status(&paths).unwrap();
