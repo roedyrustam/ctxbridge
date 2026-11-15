@@ -1,11 +1,17 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use ctxbridge::adapter::sync_adapters;
+use ctxbridge::adapter::sync_adapters_with_mode;
 use ctxbridge::capsule::generate_capsule;
 use ctxbridge::cli::{Cli, Commands};
 use ctxbridge::mcp::run_stdio_server;
-use ctxbridge::models::{CapsuleFormat, MemoryKind, MemoryScope, RecallQuery, SaveMemoryInput};
+use ctxbridge::models::{
+    CapsuleFormat, MemoryKind, MemoryScope, RecallQuery, SaveMemoryInput, ScopeFilter, SyncStatus,
+};
 use ctxbridge::paths::{find_project_root, BridgePaths};
+use ctxbridge::service::{
+    collect_status, forget_from_scope, list_recent_capsules, promote_memory, recall_across_stores,
+    run_doctor, save_memory_to_scope,
+};
 use ctxbridge::store::MemoryStore;
 use std::fs;
 
@@ -14,6 +20,8 @@ const DEFAULT_RULES_TEMPLATE: &str = r#"# Canonical Project Rules (ctxbridge)
 - Keep changes focused, well-tested, and free of placeholder stubs.
 - Record major architectural decisions with `ctxbridge save --kind decision`.
 "#;
+
+const DEFAULT_GITIGNORE_TEMPLATE: &str = "project.db*\n";
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -29,6 +37,10 @@ fn main() -> Result<()> {
             MemoryStore::open(&paths.project_db)?;
             if !paths.project_rules.exists() {
                 fs::write(&paths.project_rules, DEFAULT_RULES_TEMPLATE)?;
+            }
+            let gitignore_path = paths.project_dir.join(".gitignore");
+            if !gitignore_path.exists() {
+                fs::write(&gitignore_path, DEFAULT_GITIGNORE_TEMPLATE)?;
             }
             println!(
                 "Initialized ctxbridge at {}",
@@ -56,26 +68,18 @@ fn main() -> Result<()> {
                 .map(|t| t.split(',').map(ToString::to_string).collect())
                 .unwrap_or_default();
 
-            let db_path = match scope {
-                MemoryScope::Project => {
-                    paths.ensure_project_dir()?;
-                    &paths.project_db
-                }
-                MemoryScope::Global => {
-                    paths.ensure_global_dir()?;
-                    &paths.global_db
-                }
-            };
-            let store = MemoryStore::open(db_path)?;
-            let (record, inserted) = store.save_memory(SaveMemoryInput {
-                scope,
-                kind: parsed_kind,
-                title,
-                content,
-                source_agent: agent,
-                priority,
-                tags: parsed_tags,
-            })?;
+            let (record, inserted) = save_memory_to_scope(
+                &paths,
+                SaveMemoryInput {
+                    scope,
+                    kind: parsed_kind,
+                    title,
+                    content,
+                    source_agent: agent,
+                    priority,
+                    tags: parsed_tags,
+                },
+            )?;
             let action = if inserted { "Saved" } else { "Updated (deduplicated)" };
             println!(
                 "{action} [{}|{}|p{}] {} ({})",
@@ -90,10 +94,12 @@ fn main() -> Result<()> {
             query,
             kind,
             tag,
+            scope,
             limit,
             json,
         } => {
             let parsed_kind = kind.as_deref().map(str::parse).transpose()?;
+            let scope_filter: ScopeFilter = scope.parse()?;
             let q = RecallQuery {
                 text: query,
                 kind: parsed_kind,
@@ -101,21 +107,7 @@ fn main() -> Result<()> {
                 limit,
             };
 
-            let mut results = Vec::new();
-            if paths.project_db.exists() {
-                let p_store = MemoryStore::open(&paths.project_db)?;
-                results.extend(p_store.recall(&q)?);
-            }
-            if paths.global_db.exists() {
-                let g_store = MemoryStore::open(&paths.global_db)?;
-                results.extend(g_store.recall(&q)?);
-            }
-            results.sort_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            results.truncate(limit);
+            let results = recall_across_stores(&paths, &q, scope_filter)?;
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&results)?);
@@ -143,31 +135,47 @@ fn main() -> Result<()> {
             }
         }
         Commands::Forget { id, global } => {
-            let db_path = if global {
-                &paths.global_db
+            let scope = if global {
+                MemoryScope::Global
             } else {
-                &paths.project_db
+                MemoryScope::Project
             };
-            if !db_path.exists() {
-                println!("Store not initialized; 0 memories deleted.");
-                return Ok(());
-            }
-            let store = MemoryStore::open(db_path)?;
-            let deleted = store.forget(&id)?;
+            let deleted = forget_from_scope(&paths, &id, scope)?;
             println!("Deleted {deleted} memory record(s).");
         }
-        Commands::Sync { existing_only } => {
-            paths.ensure_project_dir()?;
-            let store = MemoryStore::open(&paths.project_db)?;
-            let (reports, checksum) = sync_adapters(
+        Commands::Sync {
+            existing_only,
+            check,
+        } => {
+            if check && !paths.project_db.exists() {
+                anyhow::bail!("project store not initialized (run `ctxbridge init`)");
+            }
+            if !check {
+                paths.ensure_project_dir()?;
+            }
+            let store = if paths.project_db.exists() {
+                MemoryStore::open(&paths.project_db)?
+            } else {
+                MemoryStore::open_in_memory()?
+            };
+            let (reports, checksum) = sync_adapters_with_mode(
                 &paths.project_root,
                 &paths.project_rules,
                 &store,
                 existing_only,
+                check,
             )?;
-            println!("Synced adapters (checksum {}):", &checksum[..12]);
+            let label = if check { "Sync check" } else { "Synced adapters" };
+            println!("{label} (checksum {}):", &checksum[..12]);
+            let mut out_of_sync = false;
             for r in reports {
+                if matches!(r.status, SyncStatus::Created | SyncStatus::Updated) {
+                    out_of_sync = true;
+                }
                 println!("  - {:<18} [{}]", r.file_path, r.status);
+            }
+            if check && out_of_sync {
+                anyhow::bail!("adapter instruction files are out of sync; run `ctxbridge sync`");
             }
         }
         Commands::Capsule {
@@ -218,25 +226,119 @@ fn main() -> Result<()> {
                 "Imported {imported} new memories ({skipped} duplicates merged/skipped)."
             );
         }
-        Commands::Status => {
-            println!("Project root: {}", paths.project_root.display());
-            if paths.project_db.exists() {
-                let p_stats = MemoryStore::open(&paths.project_db)?.stats()?;
+        Commands::Status { json } => {
+            let report = collect_status(&paths)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                return Ok(());
+            }
+
+            println!("Project root: {}", report.project_root);
+            if let Some(p_stats) = &report.project_stats {
                 println!(
                     "Project store: {} memories ({} pinned), {} capsules",
                     p_stats.total_memories, p_stats.pinned_memories, p_stats.total_capsules
                 );
+                if !p_stats.by_kind.is_empty() {
+                    let breakdown: Vec<String> = p_stats
+                        .by_kind
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect();
+                    println!("  By kind:     {}", breakdown.join(", "));
+                }
             } else {
                 println!("Project store: not initialized (run `ctxbridge init`)");
             }
-            if paths.global_db.exists() {
-                let g_stats = MemoryStore::open(&paths.global_db)?.stats()?;
+
+            if let Some(g_stats) = &report.global_stats {
                 println!(
                     "Global store:  {} memories ({} pinned)",
                     g_stats.total_memories, g_stats.pinned_memories
                 );
             } else {
                 println!("Global store:  empty");
+            }
+
+            if !report.sync_targets.is_empty() {
+                println!("Adapter sync:");
+                for t in &report.sync_targets {
+                    println!(
+                        "  - {:<18} checksum={} synced_at={}",
+                        t.file_path,
+                        &t.last_checksum[..12.min(t.last_checksum.len())],
+                        t.last_synced_at
+                    );
+                }
+            }
+        }
+        Commands::Promote { id } => {
+            let (record, inserted) = promote_memory(&paths, &id)?;
+            let action = if inserted {
+                "Promoted to global"
+            } else {
+                "Updated existing global"
+            };
+            println!(
+                "{action} [{}|p{}] {} ({})",
+                record.kind,
+                record.priority,
+                record.title,
+                &record.id[..8]
+            );
+        }
+        Commands::Capsules { limit, json } => {
+            let capsules = list_recent_capsules(&paths, limit)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&capsules)?);
+            } else if capsules.is_empty() {
+                println!("No capsules generated yet.");
+            } else {
+                for c in capsules {
+                    println!(
+                        "[{}] to={} tokens={}/{} memories={} at={}\n  goal: {}",
+                        &c.id[..8],
+                        c.target_agent,
+                        c.token_used,
+                        c.token_budget,
+                        c.included_ids.len(),
+                        c.created_at.to_rfc3339(),
+                        c.goal
+                    );
+                }
+            }
+        }
+        Commands::Doctor { json } => {
+            let report = run_doctor(&paths)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "ctxbridge doctor: {}",
+                    if report.healthy { "HEALTHY" } else { "ISSUES FOUND" }
+                );
+                println!("  - project initialized: {}", report.project_initialized);
+                println!("  - project.db ok:       {}", report.project_db_ok);
+                println!(
+                    "  - global.db ok:        {}",
+                    report
+                        .global_db_ok
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "not created".into())
+                );
+                println!("  - .gitignore present:  {}", report.gitignore_present);
+                println!("  - rules.md present:    {}", report.rules_present);
+                if report.out_of_sync_targets.is_empty() {
+                    println!("  - adapters in sync:    yes");
+                } else {
+                    println!(
+                        "  - adapters out of sync: {}",
+                        report.out_of_sync_targets.join(", ")
+                    );
+                }
+            }
+            if !report.healthy {
+                anyhow::bail!("doctor check failed");
             }
         }
         Commands::Mcp => {

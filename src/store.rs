@@ -1,6 +1,7 @@
 use crate::models::{
     compute_content_hash, derive_title, estimate_tokens, normalize_tags, HandoffCapsule,
     MemoryRecord, RecallQuery, RecallResult, SaveMemoryInput, StoreStats, SyncTargetReport,
+    SyncTargetState,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -119,10 +120,12 @@ impl MemoryStore {
         let priority = input.priority.clamp(1, 5);
         let tags = normalize_tags(input.tags);
         let content_hash = compute_content_hash(input.scope, input.kind, trimmed);
-        let title = input
+        let explicit_title = input
             .title
             .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
+            .filter(|t| !t.is_empty());
+        let title = explicit_title
+            .clone()
             .unwrap_or_else(|| derive_title(trimmed));
         let token_estimate = estimate_tokens(trimmed);
         let now = Utc::now();
@@ -138,10 +141,17 @@ impl MemoryStore {
             .optional()?;
 
         if let Some(id) = existing_id {
-            self.conn.execute(
-                "UPDATE memories SET priority = MAX(priority, ?1), updated_at = ?2, title = ?3 WHERE id = ?4",
-                params![priority as i64, now_str, title, id],
-            )?;
+            if let Some(new_title) = explicit_title {
+                self.conn.execute(
+                    "UPDATE memories SET priority = MAX(priority, ?1), updated_at = ?2, title = ?3 WHERE id = ?4",
+                    params![priority as i64, now_str, new_title, id],
+                )?;
+            } else {
+                self.conn.execute(
+                    "UPDATE memories SET priority = MAX(priority, ?1), updated_at = ?2 WHERE id = ?3",
+                    params![priority as i64, now_str, id],
+                )?;
+            }
             for tag in &tags {
                 self.conn.execute(
                     "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
@@ -308,20 +318,24 @@ impl MemoryStore {
 
             let mut results = Vec::new();
             for row in rows {
-                let (id, score) = row?;
+                let (id, base_score) = row?;
                 if let Some(record) = self.get_by_id(&id)? {
                     if matches_filters(&record, query) {
+                        let score = base_score + recency_boost(record.updated_at);
                         results.push(RecallResult {
                             memory: record,
                             score,
                         });
-                        if results.len() >= limit {
-                            break;
-                        }
                     }
                 }
             }
             if !results.is_empty() {
+                results.sort_by(|a, b| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                results.truncate(limit);
                 return Ok(results);
             }
         }
@@ -350,7 +364,7 @@ impl MemoryStore {
                         continue;
                     }
                 }
-                let score = record.priority as f64 * 0.35;
+                let score = record.priority as f64 * 0.35 + recency_boost(record.updated_at);
                 results.push(RecallResult {
                     memory: record,
                     score,
@@ -360,6 +374,12 @@ impl MemoryStore {
                 }
             }
         }
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(limit);
         Ok(results)
     }
 
@@ -377,7 +397,7 @@ impl MemoryStore {
         Ok(out)
     }
 
-    pub fn forget(&self, id_or_prefix: &str) -> Result<usize> {
+    pub fn resolve_unique_id(&self, id_or_prefix: &str) -> Result<Option<String>> {
         let needle = id_or_prefix.trim();
         if needle.is_empty() {
             anyhow::bail!("memory id or prefix cannot be empty");
@@ -390,27 +410,37 @@ impl MemoryStore {
             .query_map(params![needle, like_pattern], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        if matches.len() > 1 && !matches.iter().any(|m| m == needle) {
+        if matches.is_empty() {
+            return Ok(None);
+        }
+        if matches.iter().any(|m| m == needle) {
+            return Ok(Some(needle.to_string()));
+        }
+        if matches.len() > 1 {
             anyhow::bail!(
                 "ambiguous id prefix '{needle}' matched {} memories; provide a longer prefix",
                 matches.len()
             );
         }
+        Ok(Some(matches.into_iter().next().unwrap()))
+    }
 
-        let target_ids: Vec<String> = if matches.iter().any(|m| m == needle) {
-            vec![needle.to_string()]
-        } else {
-            matches
-        };
-
-        let mut deleted = 0;
-        for id in target_ids {
-            self.conn
-                .execute("DELETE FROM memories_fts WHERE id = ?1", params![id])?;
-            deleted += self
-                .conn
-                .execute("DELETE FROM memories WHERE id = ?1", params![id])?;
+    pub fn get_by_id_or_prefix(&self, id_or_prefix: &str) -> Result<Option<MemoryRecord>> {
+        match self.resolve_unique_id(id_or_prefix)? {
+            Some(id) => self.get_by_id(&id),
+            None => Ok(None),
         }
+    }
+
+    pub fn forget(&self, id_or_prefix: &str) -> Result<usize> {
+        let Some(id) = self.resolve_unique_id(id_or_prefix)? else {
+            return Ok(0);
+        };
+        self.conn
+            .execute("DELETE FROM memories_fts WHERE id = ?1", params![id])?;
+        let deleted = self
+            .conn
+            .execute("DELETE FROM memories WHERE id = ?1", params![id])?;
         Ok(deleted)
     }
 
@@ -445,6 +475,7 @@ impl MemoryStore {
         let mut imported = 0;
         let mut skipped = 0;
 
+        let tx = self.conn.unchecked_transaction()?;
         for line in reader.lines() {
             let line = line?;
             let trimmed = line.trim();
@@ -467,6 +498,7 @@ impl MemoryStore {
                 skipped += 1;
             }
         }
+        tx.commit()?;
         Ok((imported, skipped))
     }
 
@@ -488,7 +520,7 @@ impl MemoryStore {
         )?;
         for (idx, mem_id) in capsule.included_ids.iter().enumerate() {
             self.conn.execute(
-                "INSERT OR IGNORE INTO capsule_items (capsule_id, memory_id, rank_order) VALUES (?1, ?2, ?3)",
+                "INSERT OR IGNORE INTO capsule_items (capsule_id, memory_id, rank_order) SELECT ?1, id, ?3 FROM memories WHERE id = ?2",
                 params![capsule.id, mem_id, idx as i64],
             )?;
         }
@@ -551,6 +583,85 @@ impl MemoryStore {
             by_kind,
         })
     }
+
+    pub fn list_sync_targets(&self) -> Result<Vec<SyncTargetState>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT target_name, file_path, last_checksum, last_synced_at FROM sync_targets ORDER BY target_name ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SyncTargetState {
+                target_name: row.get(0)?,
+                file_path: row.get(1)?,
+                last_checksum: row.get(2)?,
+                last_synced_at: row.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn list_capsules(&self, limit: usize) -> Result<Vec<HandoffCapsule>> {
+        let cap_limit = if limit == 0 { 10 } else { limit };
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, goal, target_agent, token_budget, token_used, rendered_output, created_at
+            FROM capsules
+            ORDER BY created_at DESC
+            LIMIT ?1
+            "#,
+        )?;
+        let rows = stmt.query_map(params![cap_limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?;
+
+        let mut capsules = Vec::new();
+        for row in rows {
+            let (id, goal, target_agent, token_budget, token_used, rendered_output, created_at) =
+                row?;
+            let mut item_stmt = self.conn.prepare(
+                "SELECT memory_id FROM capsule_items WHERE capsule_id = ?1 ORDER BY rank_order ASC",
+            )?;
+            let included_ids = item_stmt
+                .query_map(params![id], |r| r.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            capsules.push(HandoffCapsule {
+                id,
+                goal,
+                target_agent,
+                token_budget: token_budget.max(0) as usize,
+                token_used: token_used.max(0) as usize,
+                rendered_output,
+                included_ids,
+                created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
+            });
+        }
+        Ok(capsules)
+    }
+
+    pub fn integrity_check(&self) -> Result<bool> {
+        let status: String = self
+            .conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        Ok(status.eq_ignore_ascii_case("ok"))
+    }
+}
+
+fn recency_boost(updated_at: DateTime<Utc>) -> f64 {
+    let age_secs = (Utc::now() - updated_at).num_seconds().max(0) as f64;
+    let age_days = age_secs / 86_400.0;
+    0.25 / (1.0 + age_days * 0.1)
 }
 
 fn matches_filters(record: &MemoryRecord, query: &RecallQuery) -> bool {

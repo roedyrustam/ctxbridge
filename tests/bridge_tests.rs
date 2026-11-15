@@ -1,6 +1,12 @@
-use ctxbridge::adapter::{merge_managed_block, sync_adapters, MARKER_END, MARKER_START};
+use ctxbridge::adapter::{
+    merge_managed_block, sync_adapters, sync_adapters_with_mode, MARKER_END, MARKER_START,
+};
 use ctxbridge::capsule::generate_capsule;
-use ctxbridge::models::{CapsuleFormat, MemoryKind, MemoryScope, RecallQuery, SaveMemoryInput};
+use ctxbridge::models::{
+    CapsuleFormat, MemoryKind, MemoryScope, RecallQuery, SaveMemoryInput, ScopeFilter, SyncStatus,
+};
+use ctxbridge::paths::BridgePaths;
+use ctxbridge::service::{collect_status, recall_across_stores, save_memory_to_scope};
 use ctxbridge::store::MemoryStore;
 use std::fs;
 use tempfile::tempdir;
@@ -179,4 +185,153 @@ fn capsule_respects_token_budget_and_prioritizes_rules() {
 
     assert!(capsule.token_used <= 250);
     assert!(capsule.rendered_output.contains("Critical Rule") || capsule.rendered_output.contains("strict error handling"));
+}
+
+#[test]
+fn dedup_preserves_custom_title_when_none_and_rejects_ambiguous_forget() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let (first, _) = store
+        .save_memory(SaveMemoryInput {
+            scope: MemoryScope::Project,
+            kind: MemoryKind::Decision,
+            title: Some("Custom Architectural Title".into()),
+            content: "Use WAL mode for concurrent SQLite reads".into(),
+            source_agent: "antigravity".into(),
+            priority: 3,
+            tags: vec![],
+        })
+        .unwrap();
+
+    // Second save with title: None should preserve the existing custom title
+    let (second, inserted) = store
+        .save_memory(SaveMemoryInput {
+            scope: MemoryScope::Project,
+            kind: MemoryKind::Decision,
+            title: None,
+            content: "Use WAL mode for concurrent SQLite reads".into(),
+            source_agent: "claude".into(),
+            priority: 4,
+            tags: vec!["sqlite".into()],
+        })
+        .unwrap();
+    assert!(!inserted);
+    assert_eq!(second.id, first.id);
+    assert_eq!(second.title, "Custom Architectural Title");
+    assert_eq!(second.priority, 4);
+
+    // Save a second memory so empty prefix / shared prefix can be tested
+    store
+        .save_memory(SaveMemoryInput {
+            scope: MemoryScope::Project,
+            kind: MemoryKind::Fact,
+            title: None,
+            content: "Another distinct memory".into(),
+            source_agent: "cli".into(),
+            priority: 2,
+            tags: vec![],
+        })
+        .unwrap();
+
+    // Empty query fallback lists both memories ordered by priority desc
+    let all = store
+        .recall(&RecallQuery {
+            text: "".into(),
+            kind: None,
+            tag: None,
+            limit: 10,
+        })
+        .unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].memory.id, first.id);
+}
+
+#[test]
+fn sync_check_mode_does_not_write_files_and_status_reports_targets() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let paths = BridgePaths::resolve(root).unwrap();
+    paths.ensure_project_dir().unwrap();
+    fs::write(&paths.project_rules, "- Always verify with cargo test.").unwrap();
+    let store = MemoryStore::open(&paths.project_db).unwrap();
+
+    // Check mode should report Created without actually creating files
+    let (check_reports, _) =
+        sync_adapters_with_mode(root, &paths.project_rules, &store, false, true).unwrap();
+    assert!(check_reports
+        .iter()
+        .all(|r| r.status == SyncStatus::Created));
+    assert!(!root.join("AGENTS.md").exists());
+    assert!(store.list_sync_targets().unwrap().is_empty());
+
+    // Actual sync writes files and records sync_targets
+    let (sync_reports, _) =
+        sync_adapters_with_mode(root, &paths.project_rules, &store, false, false).unwrap();
+    assert!(sync_reports
+        .iter()
+        .all(|r| r.status == SyncStatus::Created));
+    assert!(root.join("AGENTS.md").exists());
+
+    let status = collect_status(&paths).unwrap();
+    assert!(status.project_initialized);
+    assert_eq!(status.sync_targets.len(), 5);
+
+    // Subsequent check mode should report all Unchanged
+    let (recheck, _) =
+        sync_adapters_with_mode(root, &paths.project_rules, &store, false, true).unwrap();
+    assert!(recheck.iter().all(|r| r.status == SyncStatus::Unchanged));
+}
+
+#[test]
+fn service_recall_respects_scope_filter() {
+    let project_dir = tempdir().unwrap();
+    let global_dir = tempdir().unwrap();
+    let mut paths = BridgePaths::resolve(project_dir.path()).unwrap();
+    paths.global_dir = global_dir.path().to_path_buf();
+    paths.global_db = paths.global_dir.join("global.db");
+
+    save_memory_to_scope(
+        &paths,
+        SaveMemoryInput {
+            scope: MemoryScope::Project,
+            kind: MemoryKind::Decision,
+            title: Some("Project Auth".into()),
+            content: "Project uses JWT auth".into(),
+            source_agent: "cli".into(),
+            priority: 4,
+            tags: vec![],
+        },
+    )
+    .unwrap();
+
+    save_memory_to_scope(
+        &paths,
+        SaveMemoryInput {
+            scope: MemoryScope::Global,
+            kind: MemoryKind::Lesson,
+            title: Some("Global Auth".into()),
+            content: "Always rotate auth signing keys".into(),
+            source_agent: "cli".into(),
+            priority: 4,
+            tags: vec![],
+        },
+    )
+    .unwrap();
+
+    let query = RecallQuery {
+        text: "auth".into(),
+        kind: None,
+        tag: None,
+        limit: 10,
+    };
+
+    let only_project = recall_across_stores(&paths, &query, ScopeFilter::Project).unwrap();
+    assert_eq!(only_project.len(), 1);
+    assert_eq!(only_project[0].memory.scope, MemoryScope::Project);
+
+    let only_global = recall_across_stores(&paths, &query, ScopeFilter::Global).unwrap();
+    assert_eq!(only_global.len(), 1);
+    assert_eq!(only_global[0].memory.scope, MemoryScope::Global);
+
+    let both = recall_across_stores(&paths, &query, ScopeFilter::All).unwrap();
+    assert_eq!(both.len(), 2);
 }

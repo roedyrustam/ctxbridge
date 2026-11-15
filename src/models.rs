@@ -161,11 +161,41 @@ impl fmt::Display for SyncStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScopeFilter {
+    #[default]
+    All,
+    Project,
+    Global,
+}
+
+impl FromStr for ScopeFilter {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "all" | "" => Ok(ScopeFilter::All),
+            "project" => Ok(ScopeFilter::Project),
+            "global" => Ok(ScopeFilter::Global),
+            other => anyhow::bail!("invalid scope filter: {other}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncTargetReport {
     pub target_name: String,
     pub file_path: String,
     pub status: SyncStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncTargetState {
+    pub target_name: String,
+    pub file_path: String,
+    pub last_checksum: String,
+    pub last_synced_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

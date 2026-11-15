@@ -65,6 +65,10 @@ pub enum Commands {
         #[arg(short, long)]
         tag: Option<String>,
 
+        /// Filter by scope: all | project | global
+        #[arg(long, default_value = "all")]
+        scope: String,
+
         /// Maximum number of results
         #[arg(short, long, default_value_t = 8)]
         limit: usize,
@@ -89,6 +93,10 @@ pub enum Commands {
         /// Only update instruction files that already exist
         #[arg(long)]
         existing_only: bool,
+
+        /// Check if instruction files are in sync without writing (exits non-zero if out of sync)
+        #[arg(long)]
+        check: bool,
     },
 
     /// Generate a compact (<500 token) Handoff Capsule for switching AI tools
@@ -117,7 +125,35 @@ pub enum Commands {
     Import,
 
     /// Show project and global store statistics
-    Status,
+    Status {
+        /// Output JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Promote a project memory to the global (~/.ctxbridge/global.db) store
+    Promote {
+        /// Project memory ID or unique prefix
+        id: String,
+    },
+
+    /// List recently generated Handoff Capsules
+    Capsules {
+        /// Maximum number of capsules to display
+        #[arg(short, long, default_value_t = 10)]
+        limit: usize,
+
+        /// Output JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Run health, SQLite integrity, and adapter sync diagnostics
+    Doctor {
+        /// Output JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Start the JSON-RPC 2.0 MCP server over stdio
     Mcp,

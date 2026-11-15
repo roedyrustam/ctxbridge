@@ -1,11 +1,18 @@
 use crate::adapter::sync_adapters;
 use crate::capsule::generate_capsule;
-use crate::models::{CapsuleFormat, MemoryKind, MemoryScope, RecallQuery, SaveMemoryInput};
+use crate::models::{
+    CapsuleFormat, MemoryKind, MemoryScope, RecallQuery, SaveMemoryInput, ScopeFilter,
+};
 use crate::paths::BridgePaths;
+use crate::service::{
+    collect_status, forget_from_scope, list_recent_capsules, recall_across_stores,
+    save_memory_to_scope,
+};
 use crate::store::MemoryStore;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::fs;
 use std::io::{self, BufRead, Write};
 
 #[derive(Debug, Deserialize)]
@@ -37,9 +44,15 @@ struct JsonRpcError {
 pub fn run_stdio_server(paths: &BridgePaths) -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
-    let mut out = stdout.lock();
+    run_server_with_io(paths, stdin.lock(), stdout.lock())
+}
 
-    for line_res in stdin.lock().lines() {
+pub fn run_server_with_io<R: BufRead, W: Write>(
+    paths: &BridgePaths,
+    reader: R,
+    mut out: W,
+) -> Result<()> {
+    for line_res in reader.lines() {
         let line = line_res?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -90,7 +103,8 @@ fn handle_request(
             result: Some(json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {
-                    "tools": {}
+                    "tools": {},
+                    "resources": {}
                 },
                 "serverInfo": {
                     "name": "ctxbridge",
@@ -105,6 +119,35 @@ fn handle_request(
             result: Some(json!({})),
             error: None,
         },
+        "resources/list" => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: Some(json!({ "resources": resource_definitions() })),
+            error: None,
+        },
+        "resources/read" => {
+            let uri = params
+                .get("uri")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            match read_resource(paths, uri) {
+                Ok(contents) => JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id,
+                    result: Some(json!({ "contents": [contents] })),
+                    error: None,
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Resource error: {err}"),
+                    }),
+                },
+            }
+        }
         "tools/list" => JsonRpcResponse {
             jsonrpc: "2.0",
             id,
@@ -178,6 +221,7 @@ fn tool_definitions() -> Value {
                     "query": { "type": "string", "description": "Search keywords or topic" },
                     "kind": { "type": "string", "enum": ["decision", "rule", "fact", "lesson", "todo"] },
                     "tag": { "type": "string" },
+                    "scope": { "type": "string", "enum": ["all", "project", "global"], "default": "all" },
                     "limit": { "type": "integer", "default": 8 }
                 },
                 "required": ["query"]
@@ -263,26 +307,18 @@ fn execute_tool(paths: &BridgePaths, name: &str, args: &Value) -> Result<String>
                 .unwrap_or("mcp")
                 .to_string();
 
-            let db_path = match scope {
-                MemoryScope::Project => {
-                    paths.ensure_project_dir()?;
-                    &paths.project_db
-                }
-                MemoryScope::Global => {
-                    paths.ensure_global_dir()?;
-                    &paths.global_db
-                }
-            };
-            let store = MemoryStore::open(db_path)?;
-            let (record, inserted) = store.save_memory(SaveMemoryInput {
-                scope,
-                kind,
-                title,
-                content,
-                source_agent,
-                priority,
-                tags,
-            })?;
+            let (record, inserted) = save_memory_to_scope(
+                paths,
+                SaveMemoryInput {
+                    scope,
+                    kind,
+                    title,
+                    content,
+                    source_agent,
+                    priority,
+                    tags,
+                },
+            )?;
             Ok(serde_json::to_string_pretty(&json!({
                 "status": if inserted { "created" } else { "deduplicated_updated" },
                 "memory": record
@@ -303,6 +339,11 @@ fn execute_tool(paths: &BridgePaths, name: &str, args: &Value) -> Result<String>
                 .get("tag")
                 .and_then(|v| v.as_str())
                 .map(ToString::to_string);
+            let scope_filter: ScopeFilter = args
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .unwrap_or("all")
+                .parse()?;
             let limit = args
                 .get("limit")
                 .and_then(|v| v.as_u64())
@@ -315,21 +356,7 @@ fn execute_tool(paths: &BridgePaths, name: &str, args: &Value) -> Result<String>
                 limit,
             };
 
-            let mut combined = Vec::new();
-            if paths.project_db.exists() {
-                let p_store = MemoryStore::open(&paths.project_db)?;
-                combined.extend(p_store.recall(&query)?);
-            }
-            if paths.global_db.exists() {
-                let g_store = MemoryStore::open(&paths.global_db)?;
-                combined.extend(g_store.recall(&query)?);
-            }
-            combined.sort_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            combined.truncate(limit);
+            let combined = recall_across_stores(paths, &query, scope_filter)?;
             Ok(serde_json::to_string_pretty(&combined)?)
         }
         "capsule_generate" => {
@@ -396,17 +423,71 @@ fn execute_tool(paths: &BridgePaths, name: &str, args: &Value) -> Result<String>
                 .and_then(|v| v.as_str())
                 .unwrap_or("project")
                 .parse()?;
-            let db_path = match scope {
-                MemoryScope::Project => &paths.project_db,
-                MemoryScope::Global => &paths.global_db,
-            };
-            if !db_path.exists() {
-                return Ok(json!({ "deleted": 0 }).to_string());
-            }
-            let store = MemoryStore::open(db_path)?;
-            let deleted = store.forget(id)?;
+            let deleted = forget_from_scope(paths, id, scope)?;
             Ok(json!({ "deleted": deleted }).to_string())
         }
         other => anyhow::bail!("unknown tool: {other}"),
+    }
+}
+
+fn resource_definitions() -> Value {
+    json!([
+        {
+            "uri": "ctxbridge://rules",
+            "name": "Canonical Project Rules",
+            "description": "Canonical .ctxbridge/rules.md synced across AI coding assistants.",
+            "mimeType": "text/markdown"
+        },
+        {
+            "uri": "ctxbridge://status",
+            "name": "ctxbridge Store Status",
+            "description": "Project and global memory counts, kind breakdown, and adapter sync state.",
+            "mimeType": "application/json"
+        },
+        {
+            "uri": "ctxbridge://capsule/latest",
+            "name": "Latest Handoff Capsule",
+            "description": "Most recently generated token-budgeted Handoff Capsule for this project.",
+            "mimeType": "text/plain"
+        }
+    ])
+}
+
+fn read_resource(paths: &BridgePaths, uri: &str) -> Result<Value> {
+    match uri {
+        "ctxbridge://rules" => {
+            let text = if paths.project_rules.exists() {
+                fs::read_to_string(&paths.project_rules)?
+            } else {
+                String::from("# No canonical rules found (.ctxbridge/rules.md not created yet).")
+            };
+            Ok(json!({
+                "uri": uri,
+                "mimeType": "text/markdown",
+                "text": text
+            }))
+        }
+        "ctxbridge://status" => {
+            let report = collect_status(paths)?;
+            Ok(json!({
+                "uri": uri,
+                "mimeType": "application/json",
+                "text": serde_json::to_string_pretty(&report)?
+            }))
+        }
+        "ctxbridge://capsule/latest" => {
+            let capsules = list_recent_capsules(paths, 1)?;
+            let text = capsules
+                .into_iter()
+                .next()
+                .map(|c| c.rendered_output)
+                .unwrap_or_else(|| "# No Handoff Capsules generated yet.".to_string());
+            Ok(json!({
+                "uri": uri,
+                "mimeType": "text/plain",
+                "text": text
+            }))
+        }
+        other => anyhow::bail!("unknown resource uri: {other}"),
     }
 }

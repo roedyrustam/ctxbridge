@@ -112,6 +112,16 @@ pub fn sync_adapters(
     store: &MemoryStore,
     existing_only: bool,
 ) -> Result<(Vec<SyncTargetReport>, String)> {
+    sync_adapters_with_mode(project_root, rules_path, store, existing_only, false)
+}
+
+pub fn sync_adapters_with_mode(
+    project_root: &Path,
+    rules_path: &Path,
+    store: &MemoryStore,
+    existing_only: bool,
+    check_only: bool,
+) -> Result<(Vec<SyncTargetReport>, String)> {
     let rules_md = if rules_path.exists() {
         fs::read_to_string(rules_path)
             .with_context(|| format!("failed to read {}", rules_path.display()))?
@@ -157,11 +167,13 @@ pub fn sync_adapters(
             continue;
         }
 
-        if let Some(parent) = full_path.parent() {
-            fs::create_dir_all(parent)?;
+        if !check_only {
+            if let Some(parent) = full_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&full_path, next_content)
+                .with_context(|| format!("failed to write {}", full_path.display()))?;
         }
-        fs::write(&full_path, next_content)
-            .with_context(|| format!("failed to write {}", full_path.display()))?;
 
         reports.push(SyncTargetReport {
             target_name: target.name().to_string(),
@@ -174,6 +186,8 @@ pub fn sync_adapters(
         });
     }
 
-    store.record_sync_reports(&reports, &checksum)?;
+    if !check_only {
+        store.record_sync_reports(&reports, &checksum)?;
+    }
     Ok((reports, checksum))
 }

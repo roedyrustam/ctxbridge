@@ -16,21 +16,29 @@
 | :--- | :--- |
 | `ctxbridge init` | Initialize `.ctxbridge/` in the current repository and create canonical `rules.md`. |
 | `ctxbridge save <content>` | Save a memory (`--kind decision\|rule\|fact\|lesson\|todo`, `--title`, `--tags`, `--priority 1..5`, `--global`, `--agent`). |
-| `ctxbridge recall <query>` | Hybrid FTS5 + BM25 + priority search across project & global memories (`--limit`, `--kind`, `--json`). |
+| `ctxbridge recall <query>` | Hybrid FTS5 + BM25 + priority + recency search across project & global memories (`--limit`, `--kind`, `--tag`, `--scope`, `--json`). |
 | `ctxbridge forget <id>` | Permanently delete a memory by ID or prefix. |
-| `ctxbridge sync` | Sync canonical rules & pinned memories into `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `CODEX.md`, and `GEMINI.md` using non-destructive marker blocks. |
+| `ctxbridge sync` | Sync canonical rules & pinned memories into `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `CODEX.md`, and `GEMINI.md` using non-destructive marker blocks (`--existing-only`, `--check`). |
 | `ctxbridge capsule` | Generate a `<500` token Handoff Capsule (`--goal`, `--to`, `--budget`, `--format yaml\|md`). |
 | `ctxbridge export` | Export project memories deterministically to `.ctxbridge/memories.jsonl`. |
 | `ctxbridge import` | Import and deduplicate memories from `.ctxbridge/memories.jsonl` into `project.db`. |
-| `ctxbridge status` | Show store statistics, memory counts, and adapter sync state. |
+| `ctxbridge status` | Show store statistics, memory kind breakdown, and adapter sync state (`--json`). |
+| `ctxbridge promote <id>` | Promote a project-scoped memory to the global store (`~/.ctxbridge/global.db`). |
+| `ctxbridge capsules` | List recently generated Handoff Capsules (`--limit`, `--json`). |
+| `ctxbridge doctor` | Run health, SQLite integrity, `.gitignore`, and adapter sync diagnostics (`--json`). |
 | `ctxbridge mcp` | Start the JSON-RPC 2.0 MCP server over `stdin`/`stdout`. |
 
-## 4. MCP Server Tools (`ctxbridge mcp`)
-- `memory_save`: Persist a decision, rule, fact, lesson, or todo.
-- `memory_recall`: Search project and global memories with BM25 + priority ranking.
-- `capsule_generate`: Produce a token-budgeted Handoff Capsule for switching agents.
-- `context_sync`: Trigger Universal Adapter sync to repo instruction files.
-- `memory_forget`: Remove an obsolete or incorrect memory.
+## 4. MCP Server Tools & Resources (`ctxbridge mcp`)
+- **Tools**:
+  - `memory_save`: Persist a decision, rule, fact, lesson, or todo.
+  - `memory_recall`: Search project and global memories with BM25 + priority + recency ranking (`scope`: `all` | `project` | `global`).
+  - `capsule_generate`: Produce a token-budgeted Handoff Capsule for switching agents.
+  - `context_sync`: Trigger Universal Adapter sync to repo instruction files.
+  - `memory_forget`: Remove an obsolete or incorrect memory.
+- **Resources**:
+  - `ctxbridge://rules`: Read canonical `.ctxbridge/rules.md`.
+  - `ctxbridge://status`: Read JSON store statistics and adapter sync state.
+  - `ctxbridge://capsule/latest`: Read the most recently generated Handoff Capsule.
 
 ## 5. Privacy & Data Deletion
 `ctxbridge` runs 100% locally with zero telemetry or cloud transmission. Users can delete individual memories with `ctxbridge forget <id>` or wipe all stored data by removing `.ctxbridge/` and `~/.ctxbridge/`.
